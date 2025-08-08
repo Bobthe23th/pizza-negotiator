@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>Pizza Negotiator 3D — Cinematic</title>
+<style>
+  html, body { margin:0; height:100%; background:#141414; color:#eee; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+  #topbar {
+    position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+    width: min(820px, 96vw); display:flex; gap:10px; align-items:center; justify-content:space-between;
+    color:#eee; background: rgba(0,0,0,0.45); padding:8px 10px; border-radius:10px; box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+    backdrop-filter: blur(3px);
+  }
+  #personality { font-weight: 700; }
+  #meters { display:flex; gap:10px; width:100%; }
+  .meter { flex:1; }
+  .label { font-size:12px; color:#ccc; }
+  .bar { height:12px; background:#2b2b2b; border-radius:6px; overflow:hidden; margin-top:4px; }
+  .fill { height:100%; width:0%; transition: width 0.35s; }
+  .agree { background:#4ade80; }
+  .patience { background:#ef4444; }
+  #ui {
+    position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+    width: min(820px, 96vw); background: rgba(0,0,0,0.55); color: #fff;
+    border-radius: 12px; padding: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+    backdrop-filter: blur(3px);
+  }
+  #dialogue { margin: 6px 0 10px; height: 110px; overflow:auto; background: rgba(255,255,255,0.06); padding:8px; border-radius:8px; }
+  .line { margin: 2px 0; }
+  .you { color:#93c5fd; }
+  .parent { color:#fda4af; }
+  #inputRow { display:flex; gap:8px; align-items:center; }
+  #argument { flex:1; font-size:16px; padding:10px; border-radius:10px; border:none; outline:none; }
+  #sendBtn, #retryBtn {
+    border:none; border-radius:10px; font-size:16px; padding:10px 14px; cursor:pointer;
+    background:#3b82f6; color:#fff;
+  }
+  #retryBtn { display:none; background:#22c55e; }
+  #bubble {
+    position:absolute; left:50%; transform: translateX(-50%);
+    bottom: calc(10px + 190px);
+    max-width: 86vw; width: min(680px, 86vw);
+    background: #fff; color:#111; border-radius:16px; padding:12px 14px;
+    box-shadow: 0 10px 24px rgba(0,0,0,0.35);
+    border: 2px solid #222;
+  }
+  #thought { font-size: 13px; color:#555; margin-top:6px; }
+  @supports (padding: max(0px)) {
+    #ui { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+  }
+</style>
+</head>
+<body>
+<div id="topbar">
+  <div id="personality">Personality: …</div>
+  <div id="meters">
+    <div class="meter">
+      <div class="label">Agreement</div>
+      <div class="bar"><div id="agreeFill" class="fill agree"></div></div>
+    </div>
+    <div class="meter">
+      <div class="label">Patience</div>
+      <div class="bar"><div id="patienceFill" class="fill patience"></div></div>
+    </div>
+  </div>
+</div>
+<div id="bubble" role="status" aria-live="polite">
+  <div id="bubbleText">...</div>
+  <div id="thought"></div>
+</div>
+<div id="ui">
+  <div id="dialogue" aria-label="Conversation log"></div>
+  <div id="inputRow">
+    <input id="argument" type="text" placeholder="Type anything to convince them…" autocapitalize="sentences" />
+    <button id="sendBtn">Convince</button>
+    <button id="retryBtn">New Round</button>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.157.0/build/three.min.js"></script>
+<script>
+// ==================== 3D SCENE ====================
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1d22);
+
+// Renderer with shadows (mobile friendly)
+const renderer = new THREE.WebGLRenderer({antialias:true, powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.prepend(renderer.domElement);
+
+// Camera
+const camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.1, 100);
+camera.position.set(0, 1.75, 3.4);
+camera.lookAt(0, 1.6, -0.2);
+
+// Lighting — warm indoor feel + window sunlight
+const hemi = new THREE.HemisphereLight(0xfff2e0, 0x223344, 0.7);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xffffff, 0.9);
+sun.position.set(3.5, 6, 4);
+sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024);
+sun.shadow.camera.near = 0.5;
+sun.shadow.camera.far = 20;
+sun.shadow.camera.left = -6;
+sun.shadow.camera.right = 6;
+sun.shadow.camera.top = 6;
+sun.shadow.camera.bottom = -6;
+scene.add(sun);
+
+// Room
+const room = new THREE.Group();
+(function buildRoom() {
+  const wallMat = new THREE.MeshStandardMaterial({color:0x2b2f3a, roughness:0.95, metalness:0.05});
+  const floorMat = new THREE.MeshStandardMaterial({color:0x6b6b6b, roughness:0.9, metalness:0.02});
+  const rugMat = new THREE.MeshStandardMaterial({color:0x2e3846, roughness:1.0});
+  const woodMat = new THREE.MeshStandardMaterial({color:0x8b5a3c, roughness:0.7});
+
+  // Floor
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(12, 12), floorMat);
+  floor.rotation.x = -Math.PI/2;
+  floor.receiveShadow = true;
+  room.add(floor);
+
+  // Rug
+  const rug = new THREE.Mesh(new THREE.PlaneGeometry(5.5, 3.2), rugMat);
+  rug.rotation.x = -Math.PI/2;
+  rug.position.set(0, 0.01, -0.5);
+  rug.receiveShadow = true;
+  room.add(rug);
+
+  // Back wall
+  const back = new THREE.Mesh(new THREE.PlaneGeometry(12, 6), wallMat);
+  back.position.set(0, 3, -6);
+  back.receiveShadow = true;
+  room.add(back);
+
+  // Side walls
+  const leftW = new THREE.Mesh(new THREE.PlaneGeometry(12, 6), wallMat);
+  leftW.rotation.y = Math.PI/2;
+  leftW.position.set(-6, 3, 0);
+  room.add(leftW);
+
+  const rightW = new THREE.Mesh(new THREE.PlaneGeometry(12, 6), wallMat);
+  rightW.rotation.y = -Math.PI/2;
+  rightW.position.set(6, 3, 0);
+  room.add(rightW);
+
+  // Window (glow panel)
+  const winMat = new THREE.MeshStandardMaterial({color:0xaad7ff, emissive:0x7fc0ff, emissiveIntensity:0.6});
+  const win = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 1.8), winMat);
+  win.position.set(-2.2, 3.1, -5.99);
+  room.add(win);
+
+  // Table + chair
+  const tableTop = new THREE.Mesh(new THREE.BoxGeometry(3.8, 0.18, 2.3), woodMat);
+  tableTop.position.set(0, 0.86, -0.3);
+  tableTop.castShadow = true; tableTop.receiveShadow = true;
+  room.add(tableTop);
+  const legGeo = new THREE.BoxGeometry(0.16, 0.9, 0.16);
+  const legs = [
+    new THREE.Mesh(legGeo, woodMat), new THREE.Mesh(legGeo, woodMat),
+    new THREE.Mesh(legGeo, woodMat), new THREE.Mesh(legGeo, woodMat)
+  ];
+  legs[0].position.set(-1.8, 0.45, -1.25);
+  legs[1].position.set( 1.8, 0.45, -1.25);
+  legs[2].position.set(-1.8, 0.45,  0.65);
+  legs[3].position.set( 1.8, 0.45,  0.65);
+  legs.forEach(l => { l.castShadow = true; room.add(l); });
+
+  const chairSeat = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.12, 1.1), woodMat);
+  chairSeat.position.set(0, 0.6, 0.8);
+  chairSeat.castShadow = true; chairSeat.receiveShadow = true;
+  room.add(chairSeat);
+  const chairBack = new THREE.Mesh(new THREE.BoxGeometry(1.3, 1.0, 0.12), woodMat);
+  chairBack.position.set(0, 1.1, 1.3);
+  chairBack.castShadow = true; room.add(chairBack);
+})();
+scene.add(room);
+
+// Stylised human (parent) built from primitives with proportions
+const parent = new THREE.Group();
+(function buildParent() {
+  const skin = new THREE.MeshStandardMaterial({color:0xffd2b3, roughness:0.7, metalness:0.05});
+  const shirt = new THREE.MeshStandardMaterial({color:0x4f6d9e, roughness:0.9});
+  const pants = new THREE.MeshStandardMaterial({color:0x2a3550, roughness:0.95});
+  const hairMat = new THREE.MeshStandardMaterial({color:0x2b2b2b, roughness:0.6});
+
+  // Hips/torso
+  const hips = new THREE.Mesh(new THREE.CapsuleGeometry(0.55, 0.4, 6, 10), pants);
+  hips.position.set(0, 1.0, 0.95); // seated position
+  hips.castShadow = true; parent.add(hips);
+
+  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.55, 0.9, 8, 12), shirt);
+  torso.position.set(0, 1.6, 0.8);
+  torso.castShadow = true; parent.add(torso);
+
+  // Head
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.42, 28, 20), skin);
+  head.position.set(0, 2.35, 0.75);
+  head.castShadow = true; parent.add(head);
+
+  // Hair cap
+  const hair = new THREE.Mesh(new THREE.SphereGeometry(0.43, 28, 20, 0, Math.PI*2, 0, Math.PI/2), hairMat);
+  hair.position.copy(head.position);
+  hair.position.y += 0.02;
+  hair.castShadow = true; parent.add(hair);
+
+  // Eyes
+  const eyeWhite = new THREE.MeshStandardMaterial({color:0xffffff});
+  const eyeGeo = new THREE.SphereGeometry(0.07, 18, 14);
+  const lEye = new THREE.Mesh(eyeGeo, eyeWhite); lEye.position.set(-0.15, 2.42, 1.08);
+  const rEye = new THREE.Mesh(eyeGeo, eyeWhite); rEye.position.set( 0.15, 2.42, 1.08);
+  parent.add(lEye, rEye);
+  const pupilGeo = new THREE.SphereGeometry(0.035, 12, 10);
+  const pupilMat = new THREE.MeshStandardMaterial({color:0x222222, emissive:0x111111, emissiveIntensity:0.25});
+  const lP = new THREE.Mesh(pupilGeo, pupilMat); lP.position.set(-0.15, 2.40, 1.14);
+  const rP = new THREE.Mesh(pupilGeo, pupilMat); rP.position.set( 0.15, 2.40, 1.14);
+  parent.add(lP, rP);
+
+  // Brows
+  const browMat = new THREE.MeshStandardMaterial({color:0x2b2b2b});
+  const browGeo = new THREE.BoxGeometry(0.22, 0.04, 0.02);
+  const lB = new THREE.Mesh(browGeo, browMat); lB.position.set(-0.16, 2.50, 1.07);
+  const rB = new THREE.Mesh(browGeo, browMat); rB.position.set( 0.16, 2.50, 1.07);
+  parent.add(lB, rB);
+
+  // Mouth (scaled for talk/smile/frown)
+  const mouth = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.02, 16), new THREE.MeshStandardMaterial({color:0x8a3a3a}));
+  mouth.rotation.x = Math.PI/2;
+  mouth.position.set(0, 2.28, 1.10);
+  parent.add(mouth);
+
+  // Arms (with simple pivot groups for crossing)
+  const lArm = new THREE.Group();
+  const lUpper = new THREE.Mesh(new THREE.CapsuleGeometry(0.12, 0.42, 6, 10), shirt);
+  lUpper.position.set(-0.65, 1.7, 0.85);
+  lUpper.castShadow = true;
+  const lFore = new THREE.Mesh(new THREE.CapsuleGeometry(0.11, 0.42, 6, 10), skin);
+  lFore.position.set(-0.95, 1.45, 0.85);
+  lFore.castShadow = true;
+  lArm.add(lUpper, lFore); parent.add(lArm);
+
+  const rArm = new THREE.Group();
+  const rUpper = new THREE.Mesh(new THREE.CapsuleGeometry(0.12, 0.42, 6, 10), shirt);
+  rUpper.position.set(0.65, 1.7, 0.85);
+  rUpper.castShadow = true;
+  const rFore = new THREE.Mesh(new THREE.CapsuleGeometry(0.11, 0.42, 6, 10), skin);
+  rFore.position.set(0.95, 1.45, 0.85);
+  rFore.castShadow = true;
+  rArm.add(rUpper, rFore); parent.add(rArm);
+
+  // Legs (bent, seated)
+  const lLeg = new THREE.Mesh(new THREE.CapsuleGeometry(0.15, 0.65, 8, 12), pants);
+  lLeg.position.set(-0.25, 1.05, 0.4); lLeg.castShadow = true; parent.add(lLeg);
+  const rLeg = new THREE.Mesh(new THREE.CapsuleGeometry(0.15, 0.65, 8, 12), pants);
+  rLeg.position.set( 0.25, 1.05, 0.4); rLeg.castShadow = true; parent.add(rLeg);
+
+  parent.userData = { head, lB, rB, mouth, lArm, rArm, pupils:[lP, rP] };
+})();
+scene.add(parent);
+
+// ==================== PERSONALITIES & GAME ====================
+const personalities = [
+  {
+    name: "Strict",
+    likes: ["homework","grades","study","respect","responsible","promise"],
+    hates: ["pizza","junk","game","games","late","videogame","tiktok"],
+    tips: "Show responsibility: homework done, schedule kept, promise specific actions."
+  },
+  {
+    name: "Frugal",
+    likes: ["cheap","discount","coupon","deal","sale","leftovers","share","budget"],
+    hates: ["expensive","waste","delivery","extra","tip"],
+    tips: "Emphasize discounts, sharing, leftovers, staying on budget."
+  },
+  {
+    name: "Health‑conscious",
+    likes: ["healthy","salad","protein","thin","whole","vegetable","balanced","workout","gym"],
+    hates: ["greasy","fat","oil","extra cheese","stuffed crust","sugar"],
+    tips: "Offer thin crust, lean protein, veggies, balanced meal plan."
+  },
+  {
+    name: "Distracted",
+    likes: ["quick","fast","later","short","summary","one minute","brief"],
+    hates: ["long","boring","essay","paragraph"],
+    tips: "Keep it short and clear with one strong point."
+  },
+  {
+    name: "Suspicious",
+    likes: ["truth","honest","promise","evidence","proof","because"],
+    hates: ["lie","fake","secret","hide"],
+    tips: "Be honest, give reasons, and offer proof or a promise."
+  },
+  {
+    name: "Hungry (but picky)",
+    likes: ["hungry","starving","share","split","half","small","light","snack"],
+    hates: ["full","heavy","late night"],
+    tips: "Lean into being hungry now, suggest sharing small/light options."
+  }
+];
+
+let current = null;
+let agreement = 0;
+let patience = 100;
+const agreeFill = document.getElementById('agreeFill');
+const patienceFill = document.getElementById('patienceFill');
+const personalityEl = document.getElementById('personality');
+const dialogue = document.getElementById('dialogue');
+const bubbleText = document.getElementById('bubbleText');
+const thoughtEl = document.getElementById('thought');
+const argInput = document.getElementById('argument');
+const sendBtn = document.getElementById('sendBtn');
+const retryBtn = document.getElementById('retryBtn');
+
+function setBars(){
+  agreeFill.style.width = agreement + '%';
+  patienceFill.style.width = patience + '%';
+}
+
+function setExpression({smile=0, frown=0, browUp=0, lean=0, arms="open"}={}){
+  // mouth
+  const mouth = parent.userData.mouth;
+  mouth.scale.set(1 + smile*0.3, 1 + Math.max(0,frown)*0.4, 1);
+  mouth.material.color.setHex(frown>0 ? 0x6f2a2a : 0x8a3a3a);
+  // brows
+  const lB = parent.userData.lB, rB = parent.userData.rB;
+  lB.position.y = 2.50 + browUp*0.12;
+  rB.position.y = 2.50 + browUp*0.12;
+  lB.rotation.z = frown>0 ? 0.15 : -smile*0.05;
+  rB.rotation.z = frown>0 ? -0.15 : smile*0.05;
+  // lean
+  parent.rotation.x = THREE.MathUtils.degToRad(lean * 6);
+  // arms
+  const lArm = parent.userData.lArm, rArm = parent.userData.rArm;
+  if (arms === "crossed") {
+    lArm.position.set(-0.25, 0.05, 0.1);
+    rArm.position.set( 0.25, 0.05, 0.1);
+    lArm.rotation.z = 0.6; rArm.rotation.z = -0.6;
+  } else if (arms === "open") {
+    lArm.position.set(0,0,0); rArm.position.set(0,0,0);
+    lArm.rotation.set(0,0,0); rArm.rotation.set(0,0,0);
+  } else if (arms === "interested") {
+    lArm.position.set(-0.1, 0.05, 0.1);
+    rArm.position.set( 0.1, 0.05, 0.1);
+    lArm.rotation.z = 0.25; rArm.rotation.z = -0.25;
+  }
+}
+
+function talkAnimate(ms=1600){
+  const until = performance.now() + ms;
+  function tick(){
+    const left = until - performance.now();
+    const mouth = parent.userData.mouth;
+    if (left > 0) {
+      const t = (until - left) / 1000;
+      const s = 1 + Math.abs(Math.sin(t * 12)) * 1.2;
+      mouth.scale.set(mouth.scale.x, s, mouth.scale.z);
+      requestAnimationFrame(tick);
+    } else {
+      mouth.scale.set(1,1,1);
+    }
+  }
+  tick();
+}
+
+function sayParent(text, thought="", mood="neutral"){
+  bubbleText.textContent = text;
+  thoughtEl.textContent = thought ? "Tip: " + thought : "";
+  const p = document.createElement('div'); p.className = 'line parent'; p.textContent = "Parent: " + text;
+  dialogue.appendChild(p); dialogue.scrollTop = dialogue.scrollHeight;
+  // TTS (optional)
+  try {
+    if ('speechSynthesis' in window) {
+      const u = new SpeechSynthesisUtterance(text);
+      const v = speechSynthesis.getVoices().find(v=>/en|US|UK/i.test(v.lang));
+      if (v) u.voice = v;
+      u.rate = 1; u.pitch = 1; speechSynthesis.cancel(); speechSynthesis.speak(u);
+    }
+  } catch(e){}
+  // expressions by mood
+  if (mood === "positive") setExpression({smile:1, browUp:0.4, lean:0.2, arms:"interested"});
+  else if (mood === "negative") setExpression({frown:1, browUp:0, lean:-0.2, arms:"crossed"});
+  else setExpression({smile:0, frown:0, browUp:0.1, lean:0, arms:"open"});
+  talkAnimate(Math.min(2200, 600 + text.length * 30));
+}
+
+function sayYou(text){
+  const y = document.createElement('div'); y.className = 'line you'; y.textContent = "You: " + text;
+  dialogue.appendChild(y); dialogue.scrollTop = dialogue.scrollHeight;
+}
+
+// Scoring / reply
+function personalityReply(pers, input){
+  const t = input.toLowerCase();
+  let score = 0;
+  let negativeHits = 0;
+  let positiveHits = 0;
+
+  const words = t.split(/[^a-z]+/).filter(Boolean);
+  const uniq = new Set(words);
+  if (uniq.size >= 7) score += 5;
+  // penalize spamming same word
+  const counts = {};
+  words.forEach(w => counts[w]=(counts[w]||0)+1);
+  Object.values(counts).forEach(c => { if (c>=3) score -= 5; });
+
+  pers.likes.forEach(w => { if (t.includes(w)) { score += 15; positiveHits++; } });
+  pers.hates.forEach(w => { if (t.includes(w)) { score -= 20; negativeHits++; } });
+
+  if (/because|so that|in return|if.*then/i.test(input)) score += 10;
+  if (/\b(please|promise|i will|i'll|i shall)\b/i.test(input)) score += 6;
+  if (/\b(homework|chores?|dishes|clean|study)\b/i.test(input)) score += 8;
+
+  let patienceLoss = 10 + Math.max(0, 4 - positiveHits) * 2 + negativeHits * 3;
+  let msg, tip;
+  if (score >= 24) { msg = "That’s convincing."; tip = positiveHits<2 ? "One more strong point could seal it." : "Keep it balanced."; }
+  else if (score >= 10) { msg = "Maybe. Keep going."; tip = pers.tips; }
+  else if (score > 0) { msg = "Hmm… not bad, but I need more."; tip = pers.tips; }
+  else if (score <= -18) { msg = "This is not helping."; tip = "Avoid their dislikes."; }
+  else { msg = "Not convinced."; tip = pers.tips; }
+
+  const mood = score >= 10 ? "positive" : (score <= -5 ? "negative" : "neutral");
+  return { score, patienceLoss, msg, tip, mood };
+}
+
+function resetRound(){
+  current = personalities[Math.floor(Math.random()*personalities.length)];
+  agreement = 0; patience = 90;
+  setBars();
+  personalityEl.textContent = "Personality: " + current.name;
+  dialogue.textContent = "";
+  setExpression({smile:0, frown:0, browUp:0.1, lean:0, arms:"open"});
+  sayParent("Okay, what's your case?", current.tips, "neutral");
+  retryBtn.style.display = 'none';
+  sendBtn.disabled = false; argInput.disabled = false; argInput.value = ""; argInput.focus();
+}
+
+sendBtn.addEventListener('click', () => {
+  if (agreement >= 100 || patience <= 0) return;
+  const text = argInput.value.trim();
+  if (!text) return;
+  sayYou(text);
+  argInput.value = "";
+  const { score, patienceLoss, msg, tip, mood } = personalityReply(current, text);
+  agreement = Math.max(0, Math.min(100, agreement + score));
+  patience = Math.max(0, patience - patienceLoss);
+  setBars();
+  if (agreement >= 100) {
+    sayParent("Alright… pizza it is. 🍕", "You matched what they care about. Nice.", "positive");
+    sendBtn.disabled = true; argInput.disabled = true; retryBtn.style.display = 'inline-block';
+    setExpression({smile:1, browUp:0.6, lean:0.25, arms:"interested"});
+  } else if (patience <= 0) {
+    sayParent("That's enough. No pizza.", "Shorter points. Avoid their dislikes.", "negative");
+    sendBtn.disabled = true; argInput.disabled = true; retryBtn.style.display = 'inline-block';
+    setExpression({frown:1, browUp:0, lean:-0.3, arms:"crossed"});
+  } else {
+    sayParent(msg, tip, mood);
+  }
+});
+
+retryBtn.addEventListener('click', resetRound);
+argInput.addEventListener('keydown', (e)=>{ if (e.key === 'Enter') sendBtn.click(); });
+
+// Idle + render loop
+let t0 = performance.now();
+function animate(){
+  requestAnimationFrame(animate);
+  const t = (performance.now() - t0)/1000;
+  // idle breathing / micro-movements
+  parent.position.y = 0.02 * Math.sin(t*1.2);
+  const pupils = parent.userData.pupils || [];
+  const look = 0.03 * Math.sin(t*0.8);
+  if (pupils[0]) pupils[0].position.x = -0.15 + look;
+  if (pupils[1]) pupils[1].position.x =  0.15 + look;
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
